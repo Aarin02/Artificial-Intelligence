@@ -153,7 +153,6 @@ if user_input:
 
     st.session_state.conversation.append({"role": "model", "parts": [reply]})
 
-# Render conversation
 for message in st.session_state.conversation[-6]:
     if message["role"] == "user":
         st.chat_message("user").write(message["parts"][0])
