@@ -4,12 +4,14 @@ from pathlib import Path
 import re
 import math
 import pandas as pd
-from duckduckgo_search import DDGS
+import requests
 
 # ──────────────────────────────────────────────
 # CONFIG
 # ──────────────────────────────────────────────
 gemini_API_KEY = st.secrets["gemini_API"]
+tavily_API_KEY = st.secrets["tavily_API"]
+
 genai.configure(api_key=gemini_API_KEY)
 model = genai.GenerativeModel("gemini-2.5-flash")
 
@@ -158,9 +160,7 @@ def user_wants_web_search(query: str) -> bool:
 
 
 # ──────────────────────────────────────────────
-# LLM CONFIDENCE CHECKER  (two-layer)
-# Layer 1: heuristic scan of the answer text for self-doubt phrases
-# Layer 2: strict LLM self-eval with clear criteria for post-training topics
+# LLM CONFIDENCE CHECKER (two-layer)
 # ──────────────────────────────────────────────
 UNCERTAINTY_PHRASES = re.compile(
     r"("
@@ -181,11 +181,11 @@ UNCERTAINTY_PHRASES = re.compile(
 )
 
 def llm_answer_is_confident(question: str, answer: str) -> bool:
-    # Layer 1: fast heuristic
+    # Layer 1: fast heuristic scan
     if UNCERTAINTY_PHRASES.search(answer):
         return False
 
-    # Layer 2: strict self-eval
+    # Layer 2: strict LLM self-eval
     eval_prompt = (
         "You are a strict fact-checking evaluator. Decide if an AI answer is genuinely "
         "reliable or needs a web search to verify.\n\n"
@@ -247,23 +247,61 @@ def answer_with_llm(query: str):
         return None
 
 
-def answer_with_duckduckgo(query: str):
+def answer_with_tavily(query: str):
+    """
+    Uses Tavily Search API — purpose-built for AI retrieval.
+    Returns a Gemini-synthesised answer from live web results.
+    Get a free key at https://tavily.com
+    """
     try:
-        with DDGS() as ddgs:
-            results = list(ddgs.text(query, max_results=10))
-        if not results:
+        resp = requests.post(
+            "https://api.tavily.com/search",
+            json={
+                "api_key": tavily_API_KEY,
+                "query": query,
+                "search_depth": "advanced",   # deeper crawl for better results
+                "include_answer": True,        # Tavily's own quick answer
+                "include_raw_content": False,
+                "max_results": 8,
+            },
+            timeout=15,
+        )
+        resp.raise_for_status()
+        data = resp.json()
+
+        # Build context from Tavily results
+        snippets = []
+
+        # Tavily's own synthesised answer (very useful)
+        if data.get("answer"):
+            snippets.append(f"Summary: {data['answer']}")
+
+        # Individual result snippets
+        for r in data.get("results", []):
+            title   = r.get("title", "")
+            content = r.get("content", "")
+            url     = r.get("url", "")
+            if content:
+                snippets.append(f"[{title}] ({url})\n{content}")
+
+        if not snippets:
             return None
-        extracts = [r.get("body", "") for r in results if r.get("body")]
-        context_text = "\n\n---\n\n".join(extracts[:8])
+
+        context_text = "\n\n---\n\n".join(snippets)
         prompt = (
             f"{SYSTEM_INSTRUCTION}\n\n"
-            f"The following are live web search results. "
-            f"Use them to give an accurate, up-to-date answer.\n\n"
+            f"The following are live web search results for the user's question. "
+            f"Use them to give an accurate, up-to-date answer. "
+            f"If the results contain a direct answer, state it clearly.\n\n"
             f"WEB RESULTS:\n{context_text}\n\n"
             f"USER QUESTION: {query}"
         )
         response = model.generate_content(prompt)
         return response.text.replace("*", "").strip() or None
+
+    except requests.exceptions.Timeout:
+        st.warning("Web search timed out. Try again.")
+        return None
     except Exception as e:
         st.warning(f"Web search failed: {e}")
         return None
@@ -271,7 +309,7 @@ def answer_with_duckduckgo(query: str):
 
 # ──────────────────────────────────────────────
 # MAIN ROUTING LOGIC
-# Workflow: RAG -> LLM + confidence check -> Web Search
+# Workflow: RAG -> LLM + confidence check -> Tavily web search
 # ──────────────────────────────────────────────
 def get_reply(query: str) -> tuple:
     """Returns (reply_text, source_label)"""
@@ -280,7 +318,7 @@ def get_reply(query: str) -> tuple:
     # Force web search if flagged from previous turn
     if st.session_state.force_web_search:
         st.session_state.force_web_search = False
-        reply = answer_with_duckduckgo(query)
+        reply = answer_with_tavily(query)
         return (reply or "Couldn't find anything on the web either. 😕", "web")
 
     # User is complaining about previous answer -> search web for the original topic
@@ -290,10 +328,10 @@ def get_reply(query: str) -> tuple:
              if m["role"] == "user"),
             query,
         )
-        reply = answer_with_duckduckgo(last_user_q)
+        reply = answer_with_tavily(last_user_q)
         return (reply or "Couldn't find anything on the web either. 😕", "web")
 
-    # STEP 1: RAG
+    # STEP 1: RAG (if docs uploaded and relevant)
     if has_docs:
         relevance = doc_relevance_score(query)
         if relevance > 0.05:
@@ -306,8 +344,8 @@ def get_reply(query: str) -> tuple:
     if llm_reply:
         if llm_answer_is_confident(query, llm_reply):
             return (llm_reply, "llm")
-        # LLM not confident -> fall through to web
-        web_reply = answer_with_duckduckgo(query)
+        # LLM not confident -> fall to web
+        web_reply = answer_with_tavily(query)
         if web_reply:
             return (web_reply, "web")
         # Web also failed, return LLM answer with caveat
@@ -317,7 +355,7 @@ def get_reply(query: str) -> tuple:
         )
 
     # STEP 3: Web search as final fallback
-    reply = answer_with_duckduckgo(query)
+    reply = answer_with_tavily(query)
     return (reply or "Sorry, I couldn't find a good answer. Could you rephrase? 🤔", "web")
 
 
@@ -327,7 +365,7 @@ def get_reply(query: str) -> tuple:
 SOURCE_LABELS = {
     "docs": "📄 Answered from your documents",
     "llm":  "🧠 Answered from AI knowledge",
-    "web":  "🌐 Answered from web search",
+    "web":  "🌐 Answered from web search (Tavily)",
 }
 
 user_input = st.chat_input("Ask AI Assistant")
