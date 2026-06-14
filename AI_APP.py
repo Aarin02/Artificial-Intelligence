@@ -4,7 +4,6 @@ from pathlib import Path
 import re
 import math
 import pandas as pd
-from langchain.text_splitter import CharacterTextSplitter
 import wikipediaapi
 
 gemini_API_KEY = st.secrets["gemini_API"]
@@ -41,9 +40,18 @@ TOP_K = 4
 def tokenize(text: str):
     return re.findall(r"\w+", text.lower())
 
+# ✅ Custom splitter replacing langchain
+def split_text(text, chunk_size=CHUNK_SIZE, overlap=CHUNK_OVERLAP):
+    chunks = []
+    start = 0
+    while start < len(text):
+        end = start + chunk_size
+        chunks.append(text[start:end])
+        start += chunk_size - overlap
+    return chunks
+
 def load_and_chunk_docs(docs_dir: Path):
     docs = []
-    splitter = CharacterTextSplitter(chunk_size=CHUNK_SIZE, chunk_overlap=CHUNK_OVERLAP)
     for p in docs_dir.glob("*"):
         try:
             if p.suffix == ".csv":
@@ -51,7 +59,7 @@ def load_and_chunk_docs(docs_dir: Path):
                 text = df.to_string()
             else:
                 text = p.read_text(encoding="utf-8")
-            chunks = splitter.split_text(text)
+            chunks = split_text(text)
             for i, c in enumerate(chunks):
                 if c.strip():
                     docs.append({"id": f"{p.name}__chunk{i}", "source": p.name, "text": c})
@@ -134,11 +142,8 @@ if user_input:
     reply = None
 
     with st.spinner(":blue[AI Assistant] is thinking..."):
-        #RAG if docs exist
         if uploaded_files:
             reply = answer_with_rag(user_input)
-
-        #LLM if RAG failed
         if not reply:
             try:
                 prompt = str(st.session_state.instruction[-1] + str(user_input))
@@ -146,8 +151,6 @@ if user_input:
                 reply = response.text.replace("*", "").strip()
             except Exception:
                 reply = None
-
-        #Wiki if LLM irrelevant/empty
         if not reply or reply.strip() == "":
             reply = answer_with_wiki(user_input) or "Sorry, I couldn't find relevant info."
 
@@ -158,4 +161,3 @@ for message in st.session_state.conversation[-6]:
         st.chat_message("user").write(message["parts"][0])
     elif message["role"] == "model":
         st.chat_message("ai").write(message["parts"][0])
-
