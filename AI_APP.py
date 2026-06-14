@@ -6,6 +6,9 @@ import math
 import pandas as pd
 from duckduckgo_search import DDGS
 
+# ──────────────────────────────────────────────
+# CONFIG
+# ──────────────────────────────────────────────
 gemini_API_KEY = st.secrets["gemini_API"]
 genai.configure(api_key=gemini_API_KEY)
 model = genai.GenerativeModel("gemini-2.5-flash")
@@ -22,6 +25,9 @@ CHUNK_SIZE    = 550
 CHUNK_OVERLAP = 100
 TOP_K         = 4
 
+# ──────────────────────────────────────────────
+# SESSION STATE
+# ──────────────────────────────────────────────
 st.set_page_config(page_title="AI Assistant")
 st.title("Aarin's :blue[AI Assistant]")
 
@@ -30,6 +36,9 @@ if "conversation" not in st.session_state:
 if "force_web_search" not in st.session_state:
     st.session_state.force_web_search = False
 
+# ──────────────────────────────────────────────
+# FILE UPLOAD
+# ──────────────────────────────────────────────
 uploaded_files = st.file_uploader(
     "Upload your text or CSV files",
     type=["txt", "csv"],
@@ -42,6 +51,9 @@ if uploaded_files:
         with open(file_path, "wb") as out:
             out.write(f.read())
 
+# ──────────────────────────────────────────────
+# RAG HELPERS
+# ──────────────────────────────────────────────
 def tokenize(text: str):
     return re.findall(r"\w+", text.lower())
 
@@ -96,7 +108,7 @@ def score_query(query, index_struct, top_k=TOP_K):
     q_tokens = tokenize(query)
     if not q_tokens:
         return []
-    q_tf  = {t: 1 + math.log(q_tokens.count(t)) for t in set(q_tokens)}
+    q_tf = {t: 1 + math.log(q_tokens.count(t)) for t in set(q_tokens)}
     idf, index, docs_meta = index_struct["idf"], index_struct["index"], index_struct["docs_meta"]
     q_vec = {t: tf * idf[t] for t, tf in q_tf.items() if t in idf}
     q_norm = math.sqrt(sum(v * v for v in q_vec.values())) or 1.0
@@ -120,18 +132,22 @@ def doc_relevance_score(query: str) -> float:
     results = score_query(query, index_struct, top_k=1)
     return results[0][0] if results else 0.0
 
+
+# ──────────────────────────────────────────────
+# USER DISSATISFACTION DETECTOR
+# ──────────────────────────────────────────────
 DISSATISFACTION_TRIGGERS = re.compile(
     r"\b("
-    r"wrong|incorrect|not right|that('?s| is) (wrong|incorrect|not right|off)"
-    r"|not helpful|doesn'?t help|didn'?t help"
+    r"wrong|incorrect|not right|that.s (wrong|incorrect|not right|off)"
+    r"|not helpful|doesn.t help|didn.t help"
     r"|try (again|the web|searching|online)"
     r"|search (the web|online|internet|for it)"
     r"|look it up|google it|find it online"
     r"|outdated|old (info|information|answer|data)"
-    r"|you'?re (wrong|incorrect|mistaken|off)"
-    r"|that'?s (not|wrong|incorrect|off|outdated)"
-    r"|i don'?t think (that'?s|you'?re) right"
-    r"|are you sure|double[- ]?check"
+    r"|you.re (wrong|incorrect|mistaken|off)"
+    r"|that.s (not|wrong|incorrect|off|outdated)"
+    r"|i don.t think (that.s|you.re) right"
+    r"|are you sure|double.?check"
     r"|not (accurate|correct|right)"
     r")\b",
     re.IGNORECASE,
@@ -140,27 +156,65 @@ DISSATISFACTION_TRIGGERS = re.compile(
 def user_wants_web_search(query: str) -> bool:
     return bool(DISSATISFACTION_TRIGGERS.search(query))
 
+
+# ──────────────────────────────────────────────
+# LLM CONFIDENCE CHECKER  (two-layer)
+# Layer 1: heuristic scan of the answer text for self-doubt phrases
+# Layer 2: strict LLM self-eval with clear criteria for post-training topics
+# ──────────────────────────────────────────────
+UNCERTAINTY_PHRASES = re.compile(
+    r"("
+    r"i.m not sure|i don.t know|i.m unable|i cannot (confirm|verify|say|tell)"
+    r"|as of my (knowledge|training|last update|cutoff)"
+    r"|my (knowledge|training) (cutoff|ends|only goes)"
+    r"|i don.t have (access|information|data)"
+    r"|i cannot (access|browse|search|look up)"
+    r"|this (may|might|could) (have changed|be outdated|be different)"
+    r"|not in my (training|knowledge|database)"
+    r"|beyond my (knowledge|training|cutoff|scope)"
+    r"|i.m not aware|no (reliable|confirmed|verified) (information|data|details)"
+    r"|speculating|this is a guess|i.m guessing"
+    r"|i do not have real.?time|i lack (access|real.?time)"
+    r"|i was (trained|last updated) (on|in|with)"
+    r")",
+    re.IGNORECASE,
+)
+
 def llm_answer_is_confident(question: str, answer: str) -> bool:
-    """
-    Ask Gemini to self-evaluate: is this answer reliable or a guess?
-    Returns True if confident, False if it should fall back to web search.
-    """
+    # Layer 1: fast heuristic
+    if UNCERTAINTY_PHRASES.search(answer):
+        return False
+
+    # Layer 2: strict self-eval
     eval_prompt = (
-        "You are an honest self-evaluation assistant.\n"
-        "Given the question and an answer below, decide if the answer is:\n"
-        "- CONFIDENT: factually reliable, complete, and not a guess\n"
-        "- UNCERTAIN: potentially outdated, a guess, incomplete, or about something you don't clearly know\n\n"
+        "You are a strict fact-checking evaluator. Decide if an AI answer is genuinely "
+        "reliable or needs a web search to verify.\n\n"
+        "Mark UNCERTAIN if ANY of these are true:\n"
+        "- Question is about events, releases, results, or news from 2024 onwards\n"
+        "- Question mentions a specific person, film, show, product, or event that may be post-2023\n"
+        "- Answer contains hedging: maybe, probably, might, could, I think, I believe\n"
+        "- Question is about sports results, scores, winners, rankings, or standings\n"
+        "- Question is about reviews, ratings, or reception of a recently released work\n"
+        "- The answer could have changed in the last 12 months\n"
+        "- The answer is vague, generic, or avoids giving specific facts\n"
+        "- The answer says it cannot find or does not have information\n\n"
+        "Mark CONFIDENT only for stable, well-established facts: historical events before 2023, "
+        "science, math, definitions, or general concepts that do not change.\n\n"
         f"QUESTION: {question}\n\n"
         f"ANSWER: {answer}\n\n"
-        "Reply with exactly one word: CONFIDENT or UNCERTAIN."
+        "Reply with exactly one word — CONFIDENT or UNCERTAIN. No explanation."
     )
     try:
         response = model.generate_content(eval_prompt)
         verdict = response.text.strip().upper()
-        return "CONFIDENT" in verdict
+        return verdict.startswith("CONFIDENT")
     except Exception:
-        return True
+        return False  # fail safe: go to web if evaluator errors
 
+
+# ──────────────────────────────────────────────
+# ANSWER STRATEGIES
+# ──────────────────────────────────────────────
 def answer_with_rag(query: str):
     docs = load_and_chunk_docs(DOCS_DIR)
     if not docs:
@@ -184,7 +238,7 @@ def answer_with_rag(query: str):
         return None
 
 
-def answer_with_llm(query: str) -> str | None:
+def answer_with_llm(query: str):
     prompt = f"{SYSTEM_INSTRUCTION}\n\nUSER QUESTION: {query}"
     try:
         response = model.generate_content(prompt)
@@ -193,7 +247,7 @@ def answer_with_llm(query: str) -> str | None:
         return None
 
 
-def answer_with_duckduckgo(query: str) -> str | None:
+def answer_with_duckduckgo(query: str):
     try:
         with DDGS() as ddgs:
             results = list(ddgs.text(query, max_results=10))
@@ -214,50 +268,62 @@ def answer_with_duckduckgo(query: str) -> str | None:
         st.warning(f"Web search failed: {e}")
         return None
 
-def get_reply(query: str) -> tuple[str, str]:
-    """
-    Returns (reply_text, source_label)
-    source_label is one of: "docs", "llm", "web"
-    """
+
+# ──────────────────────────────────────────────
+# MAIN ROUTING LOGIC
+# Workflow: RAG -> LLM + confidence check -> Web Search
+# ──────────────────────────────────────────────
+def get_reply(query: str) -> tuple:
+    """Returns (reply_text, source_label)"""
     has_docs = any(DOCS_DIR.glob("*"))
 
+    # Force web search if flagged from previous turn
     if st.session_state.force_web_search:
         st.session_state.force_web_search = False
         reply = answer_with_duckduckgo(query)
         return (reply or "Couldn't find anything on the web either. 😕", "web")
 
+    # User is complaining about previous answer -> search web for the original topic
     if user_wants_web_search(query):
-        last_question = next(
-            (m["parts"][0] for m in reversed(st.session_state.conversation) if m["role"] == "user"),
-            query
+        last_user_q = next(
+            (m["parts"][0] for m in reversed(st.session_state.conversation[:-1])
+             if m["role"] == "user"),
+            query,
         )
-        reply = answer_with_duckduckgo(last_question)
+        reply = answer_with_duckduckgo(last_user_q)
         return (reply or "Couldn't find anything on the web either. 😕", "web")
-        
+
+    # STEP 1: RAG
     if has_docs:
         relevance = doc_relevance_score(query)
         if relevance > 0.05:
             reply = answer_with_rag(query)
             if reply:
                 return (reply, "docs")
-                
+
+    # STEP 2: LLM + strict confidence check
     llm_reply = answer_with_llm(query)
     if llm_reply:
         if llm_answer_is_confident(query, llm_reply):
             return (llm_reply, "llm")
-        else:
-            web_reply = answer_with_duckduckgo(query)
-            if web_reply:
-                return (web_reply, "web")
-            return (
-                f"{llm_reply}\n\n_(Note: I'm not fully certain about this — "
-                f"web search didn't return results either.)_",
-                "llm"
-            )
+        # LLM not confident -> fall through to web
+        web_reply = answer_with_duckduckgo(query)
+        if web_reply:
+            return (web_reply, "web")
+        # Web also failed, return LLM answer with caveat
+        return (
+            llm_reply + "\n\n_(Note: I'm not fully certain — web search returned no results either.)_",
+            "llm",
+        )
 
+    # STEP 3: Web search as final fallback
     reply = answer_with_duckduckgo(query)
     return (reply or "Sorry, I couldn't find a good answer. Could you rephrase? 🤔", "web")
 
+
+# ──────────────────────────────────────────────
+# CHAT UI
+# ──────────────────────────────────────────────
 SOURCE_LABELS = {
     "docs": "📄 Answered from your documents",
     "llm":  "🧠 Answered from AI knowledge",
