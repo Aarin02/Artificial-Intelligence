@@ -119,7 +119,7 @@ def answer_with_rag(query: str):
     except Exception:
         return None
 
-wiki_wiki = wikipediaapi.Wikipedia("en", user_agent="MyAI")
+wiki_wiki = wikipediaapi.Wikipedia(user_agent='MyAI',language='en')
 
 def answer_with_wiki(query: str):
     page = wiki_wiki.page(query)
