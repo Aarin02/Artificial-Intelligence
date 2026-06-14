@@ -4,9 +4,9 @@ from pathlib import Path
 import re
 import math
 import pandas as pd
-import wikipedia
-from functions import search_web
+from duckduckgo_search import DDGS  # ✅ Using DuckDuckGo only
 
+# 🔧 EDIT THIS: make sure you have your Gemini API key stored in Streamlit secrets
 gemini_API_KEY = st.secrets["gemini_API"]
 genai.configure(api_key=gemini_API_KEY)
 model = genai.GenerativeModel("gemini-3.5-flash")
@@ -119,38 +119,18 @@ def answer_with_rag(query: str):
     except Exception:
         return None
 
-def answer_with_wiki(query):
+# ✅ DuckDuckGo fallback replaces Wikipedia entirely
+def answer_with_duckduckgo(query):
     try:
-        normalized_query = query.strip().title()
-        try:
-            page = wikipedia.page(normalized_query, auto_suggest=False)
-        except wikipedia.exceptions.DisambiguationError as e:
-            page = wikipedia.page(e.options[0])
-        except wikipedia.exceptions.PageError:
-            search_results = wikipedia.search(query, results=1)
-            if not search_results:
-                web_results = search_web({"query": query, "answers": None})
-                if "answers" in web_results and web_results["answers"]:
-                    extract = web_results["answers"][0]
-                    prompt = f"{st.session_state.instruction[-1]}\n\nWeb extract:\n{extract}\n\nUSER QUESTION: {query}"
-                    response = model.generate_content(prompt)
-                    return response.text.replace("*", "").strip()
-                return None
-            page = wikipedia.page(search_results[0])
-
-        summary = page.summary
-        sentences = re.split(r'(?<=[.!?]) +', summary)
-        extract = " ".join(sentences[:8])
-        prompt = f"{st.session_state.instruction[-1]}\n\nWikipedia extract:\n{extract}\n\nUSER QUESTION: {query}"
-        response = model.generate_content(prompt)
-        return response.text.replace("*", "").strip()
-    except Exception:
-        web_results = search_web({"query": query, "answers": None})
-        if "answers" in web_results and web_results["answers"]:
-            extract = web_results["answers"][0]
+        with DDGS() as ddgs:
+            results = list(ddgs.text(query, max_results=3))
+        if results:
+            extract = results[0]["body"]
             prompt = f"{st.session_state.instruction[-1]}\n\nWeb extract:\n{extract}\n\nUSER QUESTION: {query}"
             response = model.generate_content(prompt)
             return response.text.replace("*", "").strip()
+        return None
+    except Exception:
         return None
 
 user_input = st.chat_input("Ask AI Assistant")
@@ -172,10 +152,10 @@ if user_input:
                 reply = None
 
         if not reply or reply.strip() == "":
-            reply = answer_with_wiki(user_input)
+            reply = answer_with_duckduckgo(user_input)
 
         if not reply or reply.strip() == "":
-            reply = "I couldn’t find info in your files or Wikipedia, but here’s my best attempt: " + user_input
+            reply = "I couldn’t find info in your files or DuckDuckGo, but here’s my best attempt: " + user_input
 
     st.session_state.conversation.append({"role": "model", "parts": [reply]})
 
