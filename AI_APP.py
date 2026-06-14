@@ -1,5 +1,8 @@
 import streamlit as st
-import google.generativeai as genai
+try:
+    import google.generativeai as genai
+except exception as e:
+    print(e)
 from pathlib import Path
 import re
 import math
