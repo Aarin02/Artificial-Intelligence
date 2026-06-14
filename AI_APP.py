@@ -4,9 +4,8 @@ from pathlib import Path
 import re
 import math
 import pandas as pd
-from duckduckgo_search import DDGS  # ✅ Using DuckDuckGo only
+from duckduckgo_search import DDGS
 
-# 🔧 EDIT THIS: make sure you have your Gemini API key stored in Streamlit secrets
 gemini_API_KEY = st.secrets["gemini_API"]
 genai.configure(api_key=gemini_API_KEY)
 model = genai.GenerativeModel("gemini-3.5-flash")
@@ -119,7 +118,6 @@ def answer_with_rag(query: str):
     except Exception:
         return None
 
-# ✅ DuckDuckGo fallback replaces Wikipedia entirely
 def answer_with_duckduckgo(query):
     try:
         with DDGS() as ddgs:
