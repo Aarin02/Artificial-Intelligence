@@ -4,7 +4,7 @@ from pathlib import Path
 import re
 import math
 import pandas as pd
-import wikipediaapi
+import wikipedia
 
 gemini_API_KEY = st.secrets["gemini_API"]
 genai.configure(api_key=gemini_API_KEY)
@@ -118,24 +118,23 @@ def answer_with_rag(query: str):
     except Exception:
         return None
 
-wiki = wikipediaapi.Wikipedia(user_agent='AI-Demo', language='en')
-
 def answer_with_wiki(query):
-    # Try exact page first
-    page = wiki.page(query)
-    if not page.exists():
-        # Fallback: search for closest page
-        search_results = wiki.search(query, results=1)
-        if not search_results:
-            return None
-        page = wiki.page(search_results[0])
-        if not page.exists():
-            return None
-    summary = page.summary
-    sentences = re.split(r'(?<=[.!?]) +', summary)
-    extract = " ".join(sentences[:8])
-    prompt = f"{st.session_state.instruction[-1]}\n\nWikipedia extract:\n{extract}\n\nUSER QUESTION: {query}"
     try:
+        normalized_query = query.strip().title()
+        try:
+            page = wikipedia.page(normalized_query, auto_suggest=False)
+        except wikipedia.exceptions.DisambiguationError as e:
+            page = wikipedia.page(e.options[0])
+        except wikipedia.exceptions.PageError:
+            search_results = wikipedia.search(query, results=1)
+            if not search_results:
+                return None
+            page = wikipedia.page(search_results[0])
+
+        summary = page.summary
+        sentences = re.split(r'(?<=[.!?]) +', summary)
+        extract = " ".join(sentences[:8])
+        prompt = f"{st.session_state.instruction[-1]}\n\nWikipedia extract:\n{extract}\n\nUSER QUESTION: {query}"
         response = model.generate_content(prompt)
         return response.text.replace("*", "").strip()
     except Exception:
@@ -148,11 +147,9 @@ if user_input:
     reply = None
 
     with st.spinner(":blue[AI Assistant] is thinking..."):
-        # 1. Try RAG
         if uploaded_files:
             reply = answer_with_rag(user_input)
 
-        # 2. Always try Gemini directly
         if not reply:
             try:
                 prompt = f"{st.session_state.instruction[-1]}\n\nUSER QUESTION: {user_input}"
@@ -161,11 +158,9 @@ if user_input:
             except Exception:
                 reply = None
 
-        # 3. Try Wikipedia fallback
         if not reply or reply.strip() == "":
             reply = answer_with_wiki(user_input)
 
-        # 4. Final fallback
         if not reply or reply.strip() == "":
             reply = "I couldn’t find info in your files or Wikipedia, but here’s my best attempt: " + user_input
 
