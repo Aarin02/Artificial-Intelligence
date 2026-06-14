@@ -5,7 +5,7 @@ import re
 import math
 import pandas as pd
 import wikipedia
-from functions import search_web  # ✅ Added import for web search fallback
+from functions import search_web
 
 gemini_API_KEY = st.secrets["gemini_API"]
 genai.configure(api_key=gemini_API_KEY)
@@ -129,7 +129,6 @@ def answer_with_wiki(query):
         except wikipedia.exceptions.PageError:
             search_results = wikipedia.search(query, results=1)
             if not search_results:
-                # ✅ New fallback: use web search if Wikipedia fails
                 web_results = search_web({"query": query, "answers": None})
                 if "answers" in web_results and web_results["answers"]:
                     extract = web_results["answers"][0]
@@ -146,7 +145,6 @@ def answer_with_wiki(query):
         response = model.generate_content(prompt)
         return response.text.replace("*", "").strip()
     except Exception:
-        # ✅ Extra safeguard: if both Wikipedia and web search fail
         web_results = search_web({"query": query, "answers": None})
         if "answers" in web_results and web_results["answers"]:
             extract = web_results["answers"][0]
