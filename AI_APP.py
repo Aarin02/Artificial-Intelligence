@@ -122,12 +122,13 @@ def answer_with_rag(query: str):
 wiki = wikipediaapi.Wikipedia(user_agent='AI-Demo', language='en')
 
 def answer_with_wiki(query):
-    page = wiki_wiki.page(query)
+    page = wiki.page(query)
     if not page.exists():
         return None
+    page = wiki.page(query)
     summary = page.summary
-    sentences = re.split(r'(?<=[.!?])\s+', summary.strip())
-    extract = " ".join(sentences[:3])
+    sentences = re.split(r'(?<=[.!?]) +', summary)
+    extract=" ".join(sentences[:8])
     prompt = f"{st.session_state.instruction[-1]}\n\nWikipedia extract:\n{extract}\n\nUSER QUESTION: {query}"
     try:
         response = model.generate_content(prompt)
