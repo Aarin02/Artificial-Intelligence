@@ -6,6 +6,7 @@ import math
 import pandas as pd
 from duckduckgo_search import DDGS
 
+# 🔧 Make sure your Gemini API key is set in .streamlit/secrets.toml
 gemini_API_KEY = st.secrets["gemini_API"]
 genai.configure(api_key=gemini_API_KEY)
 model = genai.GenerativeModel("gemini-3.5-flash")
@@ -118,17 +119,20 @@ def answer_with_rag(query: str):
     except Exception:
         return None
 
+# ✅ Improved DuckDuckGo fallback: merge multiple snippets
 def answer_with_duckduckgo(query):
     try:
         with DDGS() as ddgs:
-            results = list(ddgs.text(query, max_results=3))
+            results = list(ddgs.text(query, max_results=5))
         if results:
-            extract = results[0]["body"]
-            prompt = f"{st.session_state.instruction[-1]}\n\nWeb extract:\n{extract}\n\nUSER QUESTION: {query}"
+            extracts = [r.get("body", "") for r in results if "body" in r]
+            context_text = "\n\n---\n\n".join(extracts)
+            prompt = f"{st.session_state.instruction[-1]}\n\nWeb extracts:\n{context_text}\n\nUSER QUESTION: {query}"
             response = model.generate_content(prompt)
             return response.text.replace("*", "").strip()
         return None
-    except Exception:
+    except Exception as e:
+        print("DuckDuckGo error:", e)
         return None
 
 user_input = st.chat_input("Ask AI Assistant")
@@ -160,5 +164,8 @@ if user_input:
 for message in st.session_state.conversation[-6:]:
     if message["role"] == "user":
         st.chat_message("user").write(message["parts"][0])
+    elif message["role"] == "model":
+        st.chat_message("ai").write(message["parts"][0])
+
     elif message["role"] == "model":
         st.chat_message("ai").write(message["parts"][0])
