@@ -11,7 +11,7 @@ genai.configure(api_key=gemini_API_KEY)
 model = genai.GenerativeModel("gemini-3.5-flash")
 
 ins = [
-    "INSTRUCTION= You are a supportive,enthusiastic, straight to the point AI Assistant, have some personality and responses must sound human, use emojis but very so lightly "
+    "INSTRUCTION= You are a supportive, enthusiastic, straight to the point AI Assistant, have some personality and responses must sound human, use emojis but very so lightly "
 ]
 
 st.set_page_config(page_title="AI Assistant")
@@ -40,7 +40,6 @@ TOP_K = 4
 def tokenize(text: str):
     return re.findall(r"\w+", text.lower())
 
-# ✅ Custom splitter replacing langchain
 def split_text(text, chunk_size=CHUNK_SIZE, overlap=CHUNK_OVERLAP):
     chunks = []
     start = 0
@@ -118,17 +117,23 @@ def answer_with_rag(query: str):
         return response.text.replace("*", "").strip()
     except Exception:
         return None
-        
+
 wiki = wikipediaapi.Wikipedia(user_agent='AI-Demo', language='en')
 
 def answer_with_wiki(query):
+    # Try exact page first
     page = wiki.page(query)
     if not page.exists():
-        return None
-    page = wiki.page(query)
+        # Fallback: search for closest page
+        search_results = wiki.search(query, results=1)
+        if not search_results:
+            return None
+        page = wiki.page(search_results[0])
+        if not page.exists():
+            return None
     summary = page.summary
     sentences = re.split(r'(?<=[.!?]) +', summary)
-    extract=" ".join(sentences[:8])
+    extract = " ".join(sentences[:8])
     prompt = f"{st.session_state.instruction[-1]}\n\nWikipedia extract:\n{extract}\n\nUSER QUESTION: {query}"
     try:
         response = model.generate_content(prompt)
@@ -143,17 +148,26 @@ if user_input:
     reply = None
 
     with st.spinner(":blue[AI Assistant] is thinking..."):
+        # 1. Try RAG
         if uploaded_files:
             reply = answer_with_rag(user_input)
+
+        # 2. Always try Gemini directly
         if not reply:
             try:
-                prompt = str(st.session_state.instruction[-1] + str(user_input))
+                prompt = f"{st.session_state.instruction[-1]}\n\nUSER QUESTION: {user_input}"
                 response = model.generate_content(prompt)
                 reply = response.text.replace("*", "").strip()
             except Exception:
                 reply = None
+
+        # 3. Try Wikipedia fallback
         if not reply or reply.strip() == "":
-            reply = answer_with_wiki(user_input) or "Sorry, I couldn't find relevant info."
+            reply = answer_with_wiki(user_input)
+
+        # 4. Final fallback
+        if not reply or reply.strip() == "":
+            reply = "I couldn’t find info in your files or Wikipedia, but here’s my best attempt: " + user_input
 
     st.session_state.conversation.append({"role": "model", "parts": [reply]})
 
