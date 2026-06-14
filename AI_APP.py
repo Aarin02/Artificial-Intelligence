@@ -120,13 +120,15 @@ def answer_with_rag(query: str):
         return None
 
 # ✅ Improved DuckDuckGo fallback: merge multiple snippets
-def answer_with_duckduckgo(query):
+def answer_with_duckduckgo(query, debug=False):
     try:
         with DDGS() as ddgs:
-            results = list(ddgs.text(query, max_results=5))
+            results = list(ddgs.text(query, max_results=8))
         if results:
             extracts = [r.get("body", "") for r in results if "body" in r]
             context_text = "\n\n---\n\n".join(extracts)
+            if debug:
+                st.expander("Raw DuckDuckGo snippets").write(extracts)
             prompt = f"{st.session_state.instruction[-1]}\n\nWeb extracts:\n{context_text}\n\nUSER QUESTION: {query}"
             response = model.generate_content(prompt)
             return response.text.replace("*", "").strip()
@@ -154,7 +156,7 @@ if user_input:
                 reply = None
 
         if not reply or reply.strip() == "":
-            reply = answer_with_duckduckgo(user_input)
+            reply = answer_with_duckduckgo(user_input, debug=True)
 
         if not reply or reply.strip() == "":
             reply = "I couldn’t find info in your files or DuckDuckGo, but here’s my best attempt: " + user_input
@@ -164,8 +166,5 @@ if user_input:
 for message in st.session_state.conversation[-6:]:
     if message["role"] == "user":
         st.chat_message("user").write(message["parts"][0])
-    elif message["role"] == "model":
-        st.chat_message("ai").write(message["parts"][0])
-
     elif message["role"] == "model":
         st.chat_message("ai").write(message["parts"][0])
