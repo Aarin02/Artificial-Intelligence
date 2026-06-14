@@ -118,10 +118,10 @@ def answer_with_rag(query: str):
         return response.text.replace("*", "").strip()
     except Exception:
         return None
+        
+wiki = wikipediaapi.Wikipedia(user_agent='AI-Demo', language='en')
 
-wiki_wiki = wikipediaapi.Wikipedia(user_agent='MyAI',language='en')
-
-def answer_with_wiki(query: str):
+def answer_with_wiki(query):
     page = wiki_wiki.page(query)
     if not page.exists():
         return None
