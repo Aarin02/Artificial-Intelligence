@@ -392,7 +392,7 @@ elif st.session_state.pending_query and st.session_state.doc_fallback is not Non
     st.session_state.pending_query = None
     st.session_state.conversation.append({"role": "user", "parts": [saved_query]})
 
-    with st.spinner(":blue[AI Assistant] is thinking..."):
+    with st.bottom.spinner(":blue[AI Assistant] is thinking..."):
         reply, source = get_reply(saved_query)
 
     st.session_state.conversation.append({
