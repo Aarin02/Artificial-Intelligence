@@ -8,7 +8,6 @@ import requests
 
 gemini_API_KEY = st.secrets["gemini_API"]
 tavily_API_KEY = st.secrets["tavily_API"]
-
 genai.configure(api_key=gemini_API_KEY)
 model = genai.GenerativeModel("gemini-2.5-flash")
 
@@ -32,6 +31,15 @@ if "conversation" not in st.session_state:
 if "force_web_search" not in st.session_state:
     st.session_state.force_web_search = False
 
+if "doc_fallback" not in st.session_state:
+    st.session_state.doc_fallback = None
+
+if "awaiting_fallback_choice" not in st.session_state:
+    st.session_state.awaiting_fallback_choice = False
+
+if "pending_query" not in st.session_state:
+    st.session_state.pending_query = None
+
 uploaded_files = st.file_uploader(
     "Upload your text or CSV files",
     type=["txt", "csv"],
@@ -44,6 +52,15 @@ if uploaded_files:
         with open(file_path, "wb") as out:
             out.write(f.read())
 
+with st.sidebar:
+    st.markdown("### ⚙️ Fallback preference")
+    current = st.session_state.doc_fallback
+    label   = {"llm": "🧠 AI Knowledge", "web": "🌐 Web Search"}.get(current, "Not set")
+    st.caption(f"When docs don't have the answer: **{label}**")
+    if st.button("Reset preference"):
+        st.session_state.doc_fallback = None
+        st.success("Preference cleared — you'll be asked again next time.")
+        
 def tokenize(text: str):
     return re.findall(r"\w+", text.lower())
 
@@ -142,6 +159,7 @@ DISSATISFACTION_TRIGGERS = re.compile(
 def user_wants_web_search(query: str) -> bool:
     return bool(DISSATISFACTION_TRIGGERS.search(query))
 
+
 UNCERTAINTY_PHRASES = re.compile(
     r"("
     r"i.m not sure|i don.t know|i.m unable|i cannot (confirm|verify|say|tell)"
@@ -189,7 +207,6 @@ def llm_answer_is_confident(question: str, answer: str) -> bool:
     except Exception:
         return False
 
-
 def answer_with_rag(query: str):
     docs = load_and_chunk_docs(DOCS_DIR)
     if not docs:
@@ -223,19 +240,14 @@ def answer_with_llm(query: str):
 
 
 def answer_with_tavily(query: str):
-    """
-    Uses Tavily Search API — purpose-built for AI retrieval.
-    Returns a Gemini-synthesised answer from live web results.
-    Get a free key at https://tavily.com
-    """
     try:
         resp = requests.post(
             "https://api.tavily.com/search",
             json={
                 "api_key": tavily_API_KEY,
                 "query": query,
-                "search_depth": "advanced",  
-                "include_answer": True,     
+                "search_depth": "advanced",
+                "include_answer": True,
                 "include_raw_content": False,
                 "max_results": 8,
             },
@@ -245,10 +257,8 @@ def answer_with_tavily(query: str):
         data = resp.json()
 
         snippets = []
-
         if data.get("answer"):
             snippets.append(f"Summary: {data['answer']}")
-            
         for r in data.get("results", []):
             title   = r.get("title", "")
             content = r.get("content", "")
@@ -279,14 +289,21 @@ def answer_with_tavily(query: str):
         return None
 
 def get_reply(query: str) -> tuple:
-    """Returns (reply_text, source_label)"""
+    """Returns (reply_text, source_label).
+
+    When docs are present but nothing relevant is found, the behaviour depends
+    on st.session_state.doc_fallback:
+      - None  → caller must show the popup and re-run (returns None, None)
+      - "llm" → fall back to AI knowledge (then web if uncertain)
+      - "web" → fall back directly to web search
+    """
     has_docs = any(DOCS_DIR.glob("*"))
-    
+
     if st.session_state.force_web_search:
         st.session_state.force_web_search = False
         reply = answer_with_tavily(query)
         return (reply or "Couldn't find anything on the web either. 😕", "web")
-
+        
     if user_wants_web_search(query):
         last_user_q = next(
             (m["parts"][0] for m in reversed(st.session_state.conversation[:-1])
@@ -302,7 +319,12 @@ def get_reply(query: str) -> tuple:
             reply = answer_with_rag(query)
             if reply:
                 return (reply, "docs")
-
+        fallback = st.session_state.doc_fallback
+        if fallback is None:
+            return (None, None)
+        elif fallback == "web":
+            reply = answer_with_tavily(query)
+            return (reply or "Couldn't find anything on the web either. 😕", "web")
     llm_reply = answer_with_llm(query)
     if llm_reply:
         if llm_answer_is_confident(query, llm_reply):
@@ -324,6 +346,26 @@ SOURCE_LABELS = {
     "web":  "🌐 Answered from web search",
 }
 
+@st.dialog("Nothing found in your documents 🤔")
+def show_fallback_dialog(query: str):
+    st.write(
+        "I couldn't find anything relevant in your uploaded documents for this question. "
+        "What should I do when that happens?"
+    )
+    st.caption("Your choice will be remembered for the rest of this session.")
+
+    col1, col2 = st.columns(2)
+    with col1:
+        if st.button("🧠 Use AI Knowledge", use_container_width=True):
+            st.session_state.doc_fallback          = "llm"
+            st.session_state.awaiting_fallback_choice = False
+            st.rerun()
+    with col2:
+        if st.button("🌐 Search the Web", use_container_width=True):
+            st.session_state.doc_fallback          = "web"
+            st.session_state.awaiting_fallback_choice = False
+            st.rerun()
+
 user_input = st.chat_input("Ask AI Assistant")
 
 if user_input:
@@ -331,6 +373,27 @@ if user_input:
 
     with st.spinner(":blue[AI Assistant] is thinking..."):
         reply, source = get_reply(user_input)
+
+    if reply is None:
+        st.session_state.pending_query            = user_input
+        st.session_state.awaiting_fallback_choice = True
+        st.session_state.conversation.pop()
+    else:
+        st.session_state.conversation.append({
+            "role": "model",
+            "parts": [reply],
+            "source": source,
+        })
+if st.session_state.awaiting_fallback_choice and st.session_state.pending_query:
+    show_fallback_dialog(st.session_state.pending_query)
+
+elif st.session_state.pending_query and st.session_state.doc_fallback is not None:
+    saved_query = st.session_state.pending_query
+    st.session_state.pending_query = None
+    st.session_state.conversation.append({"role": "user", "parts": [saved_query]})
+
+    with st.spinner(":blue[AI Assistant] is thinking..."):
+        reply, source = get_reply(saved_query)
 
     st.session_state.conversation.append({
         "role": "model",
